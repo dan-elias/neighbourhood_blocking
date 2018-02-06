@@ -38,18 +38,17 @@ scalability_results.ipynb   | Notebook for viewing results of scalability test
 Instructions
 ------------
 
-To use Adjacent Block Indexing
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+### To use Adjacent Block Indexing
+
 Use the AdjacentBlockIndex class in adjacent_block_index.py.  It has the same API
 as indexers in recordlinkage.
 
-To run the index quality test
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+### To run the index quality test
+
 In Jupyter, open index_quality.ipynb and run all cells
 
 
-To run the scalability test
-^^^^^^^^^^^^^^^^^^^^^^^^^^^
+### To run the scalability test
 
 Disable memory paging.  To do this on Linux, use:
 
