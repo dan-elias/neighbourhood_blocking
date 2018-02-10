@@ -2,6 +2,9 @@ import numpy as np
 import pandas as pd
 from recordlinkage import BlockIndex
 
+def int_geomspace(start, stop, num=50, endpoint=True):
+    return np.unique(np.logspace(np.log10(start), np.log10(stop), num=num, endpoint=endpoint, dtype=int))
+
 def sample_dedup_dataset(rows=1000, columns=5, instances_per_entity=2, noise_sd=0.01, null_proportion=0.01, include_true_matches=False):
     np.random.seed(1)
     n_entities = (rows - 1) // instances_per_entity + 1

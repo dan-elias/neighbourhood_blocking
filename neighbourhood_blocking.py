@@ -6,19 +6,25 @@ from recordlinkage.indexing import BlockIndex
 def ranking1d(x):
     x_by_rank = np.sort(np.unique(x))
     result = np.searchsorted(x_by_rank, x).astype(float)
-    result[np.isnan(x)] = np.nan
     return result
 
-class AdjacentBlockIndex(BlockIndex):
+class NeighbourhoodBlockIndex(BlockIndex):
     '''
     :class:`recordlinkage.indexing.BlockIndex` that 
     includes matches with elements in adjacent blocks
     and null values
     '''
-    def __init__(self, *args, max_nulls=0, ndx_sorting_keys=slice(None), **kwargs):
+    def __init__(self, *args, max_nulls=0, max_non_matches=0, max_rank_differences=1, **kwargs):
         super().__init__(*args, **kwargs)
         self.max_nulls = max_nulls
-        self.ndx_sorting_keys = slice(0,0) if ndx_sorting_keys is None else ndx_sorting_keys
+        self.max_non_matches = max_non_matches
+        self.max_rank_differences = list(max_rank_differences) if hasattr(max_rank_differences, '__iter__') else [max_rank_differences]
+    def _get_max_rank_differences(self, key_df):
+        n_cols = len(key_df.columns)
+        diffs = list(self.max_rank_differences)
+        if len(diffs) < n_cols:
+            diffs += diffs[-1:] * (n_cols - len(diffs))
+        return np.array(diffs[:n_cols])
     def _key_dfs(self, *dfs):
         '''
         Normalized dataframes.  Properties:
@@ -39,10 +45,13 @@ class AdjacentBlockIndex(BlockIndex):
         for df in key_dfs:
             df.columns = key_columns
         for col, vals in pd.concat(key_dfs, ignore_index=True).iteritems():
-            unique_vals = vals.unique()
-            key_ranks = pd.Series(ranking1d(unique_vals), index=unique_vals)
+            unique_values = vals.dropna().unique()
+            key_ranks = pd.Series(ranking1d(unique_values), index=unique_values)
             for key_df in key_dfs:
-                key_df[col] = key_ranks[key_df[col].values].values
+                key_rank_values = np.full(shape=len(key_df[col]), fill_value=np.nan)
+                ndx_not_null = (~key_df[col].isnull()).values
+                key_rank_values[ndx_not_null] = key_ranks[key_df[col].values[ndx_not_null]].values
+                key_df[col] = key_rank_values
         return key_dfs
     def _inclusive_key_df_link_index(self, *key_dfs):
         '''
@@ -54,7 +63,6 @@ class AdjacentBlockIndex(BlockIndex):
         '''
         assert (1 <= len(key_dfs) <= 2) and all(tuple(df.columns) == tuple(key_dfs[0].columns) for df in key_dfs)
         blocks = pd.concat(key_dfs, ignore_index=True).drop_duplicates().reset_index(drop=True)
-        blocks = blocks[blocks.isnull().sum(axis='columns') <= self.max_nulls].reset_index(drop=True)
         df_unique_block_ids = [blocks.index.values] if len(key_dfs) == 1 else [key_df.merge(blocks.reset_index(), on=list(key_df.columns))['index'].unique() for key_df in key_dfs]
         if blocks.max().max() in [0, np.nan]:
             block_pair_candidates = pd.MultiIndex.from_product([df_unique_block_ids[0], df_unique_block_ids[-1]])
@@ -62,21 +70,28 @@ class AdjacentBlockIndex(BlockIndex):
             coarsened_blocks = np.floor(blocks.copy() / 2)
             block_pair_candidates = self._inclusive_key_df_link_index(*[coarsened_blocks.loc[block_ids, :] for block_ids in df_unique_block_ids])
         rank_difference_components = [blocks.loc[block_pair_candidates.get_level_values(lvl),:].reset_index(drop=True) for lvl in range(2)]
-        rank_differences = rank_difference_components[0].copy() - rank_difference_components[1]
-        rank_differences.index = block_pair_candidates
+        abs_rank_difference_excesses = (rank_difference_components[0] - rank_difference_components[1]).abs()
         del rank_difference_components
-        def key_subset(sorting):
-            all_keys = key_dfs[0].columns
-            sorting_keys = list(all_keys[self.ndx_sorting_keys])
-            return sorting_keys if sorting else [c for c in all_keys if c not in sorting_keys]
-        null_count_ok = rank_differences.isnull().sum(axis='columns') <= self.max_nulls
-        sorting_keys_match = not(key_subset(sorting=True)) or rank_differences[key_subset(sorting=True)].abs().max(axis='columns').isin([0, 1, np.nan])
-        non_sorting_keys_match = not(key_subset(sorting=False)) or rank_differences[key_subset(sorting=False)].abs().max(axis='columns').isin([0, np.nan])
-        block_link = rank_differences[null_count_ok & sorting_keys_match & non_sorting_keys_match].index.to_frame().reset_index(drop=True)
+        abs_rank_difference_excesses.index = block_pair_candidates
+        for (col, vals), max_diff in zip(abs_rank_difference_excesses.iteritems(), self._get_max_rank_differences(blocks)):
+            abs_rank_difference_excesses[col] = vals - max_diff
+        column_match_counts = pd.DataFrame({'wildcard': abs_rank_difference_excesses.isnull().sum(axis='columns')})
+        column_match_counts['rank'] = (abs_rank_difference_excesses <= 0).sum(axis='columns')
+        n_column_matches_ok = (column_match_counts['rank'] + np.clip(column_match_counts['wildcard'], None, self.max_nulls)) >= (len(abs_rank_difference_excesses.columns) - self.max_non_matches)
+        block_link = abs_rank_difference_excesses[n_column_matches_ok].index.to_frame().reset_index(drop=True)
         block_link.columns = ['block_id_a', 'block_id_b']
-        block_id_lookup = blocks.reset_index(drop=False).set_index(list(blocks.columns)).iloc[:,0]
-        block_id_lookup.name = 'block_id'
-        block_record_id_mappings = [key_df.join(block_id_lookup, on=block_id_lookup.index.names)[[block_id_lookup.name]].reset_index() for key_df in key_dfs]
+        def get_block_id_lookup():
+            df = blocks.reset_index(drop=False)
+            df = df.append(df.max().fillna(0) + 1, ignore_index=True)
+            result = df.set_index(list(blocks.columns)).iloc[:,0].iloc[:-1]
+            result.name = 'block_id'
+            return result
+        block_id_lookup = get_block_id_lookup()
+        def get_block_record_id_mapping(key_df):
+            result = key_df.join(block_id_lookup, on=block_id_lookup.index.names)[[block_id_lookup.name]]
+            result.index.name = 'index'
+            return result.reset_index()
+        block_record_id_mappings = [get_block_record_id_mapping(key_df) for key_df in key_dfs]
         return block_record_id_mappings[0].rename(columns={'index':'index_a'}).merge(block_link, left_on='block_id', right_on='block_id_a')[['index_a', 'block_id_b']].merge(block_record_id_mappings[-1].rename(columns={'index':'index_b'}), left_on='block_id_b', right_on='block_id').set_index(['index_a', 'index_b']).index
     def _dedup_index(self, df_a):
         result = self._inclusive_key_df_link_index(*self._key_dfs(df_a))

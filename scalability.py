@@ -3,7 +3,7 @@
 
 # # Index method scalability comparison
 # 
-# This notebook compares the scalability properties of AdjacentBlockIndex with the BlockIndex and SortedNeighbourhoodIndex (both in the recordlinkage package).  
+# This notebook compares the scalability properties of NeighbourhoodBlockIndex with the BlockIndex and SortedNeighbourhoodIndex (both in the recordlinkage package).  
 # 
 # 
 # 
@@ -34,9 +34,9 @@ import pandas as pd
 
 
 from recordlinkage import FullIndex, BlockIndex, SortedNeighbourhoodIndex
-from adjacent_block_index import AdjacentBlockIndex
+from neighbourhood_blocking import NeighbourhoodBlockIndex
 
-from experiment_helpers import sample_dedup_dataset
+from experiment_helpers import sample_dedup_dataset, int_geomspace
 
 
 # ## Testing function
@@ -44,7 +44,7 @@ from experiment_helpers import sample_dedup_dataset
 # In[ ]:
 
 
-def get_index_timings(index_details, row_counts, column_counts, distinct_entity_instance_counts, granularities, index_length_limit=5e6, index_time_limit=1, result_file=None, save_interval_seconds=60, verbose=False, debug=False):
+def get_index_timings(index_details, row_counts, column_counts, distinct_entity_instance_counts, granularities, index_length_limit=5e6, index_time_limit=1, result_file=None, save_interval_seconds=60, verbose=False, debug=False, continue_based_on_count=False):
     '''
     Negative granularities are neighbourhood radii
     '''
@@ -54,6 +54,12 @@ def get_index_timings(index_details, row_counts, column_counts, distinct_entity_
         latest_keys_file = partial_result_file.parent.joinpath('_{}'.format(partial_result_file.name))
     timings = pd.read_pickle(str(partial_result_file)) if (result_file is not None) and partial_result_file.exists() else pd.DataFrame()
     failed_keys = pd.read_pickle(str(latest_keys_file)) if (result_file is not None) and latest_keys_file.exists() else {}
+    if continue_based_on_count and (len(timings)>0) and ('combinations_processed' in timings.columns):
+        skip_to_past_combination_number = timings['combinations_processed'].max()
+        if pd.isnull(skip_to_past_combination_number):
+            skip_to_past_combination_number = -1
+    else:
+        skip_to_past_combination_number = -1
     last_save_time = datetime.datetime.now()
     def msg(*args, **kwargs):
         if verbose:
@@ -86,6 +92,8 @@ def get_index_timings(index_details, row_counts, column_counts, distinct_entity_
                 for label, index_type, index_kwargs in index_details:
                     index_kwargs = dict(index_kwargs)
                     combinations_processed += 1
+                    if combinations_processed <= skip_to_past_combination_number:
+                        continue
                     progress = combinations_processed / total_combinations
                     _locals = locals()
                     current_keys = {k:_locals[k] for k in id_cols}
@@ -125,7 +133,7 @@ def get_index_timings(index_details, row_counts, column_counts, distinct_entity_
                         debug_msg ('\t\t\t\t\tskipping {label}'.format(**locals()))
                         continue
                     msg('{progress:.0%}\t\t\t{label}'.format(**locals()))
-                    stats_dict = {k: _locals[k] for k in (['length_full'] + id_cols)}
+                    stats_dict = {k: _locals[k] for k in (['length_full', 'combinations_processed'] + id_cols)}
                     stats_dict.update(index_kwargs)
                     if index_type is SortedNeighbourhoodIndex:
                         dataset_type = 'continuous'
@@ -152,7 +160,7 @@ def get_index_timings(index_details, row_counts, column_counts, distinct_entity_
                                        'memory_overflow': memory_overflow,
                                       })
                     timings = timings.append(stats_dict, ignore_index=True)
-                    if (result_file is not None) and (datetime.datetime.now() - last_save_time).total_seconds() > save_interval_seconds:
+                    if (result_file is not None) and (memory_overflow or ((datetime.datetime.now() - last_save_time).total_seconds() > save_interval_seconds)):
                         timings.to_pickle(str(partial_result_file))
                         last_save_time = datetime.datetime.now()
     timings['reduction_ratio'] = 1 - timings['index_length'] / timings['length_full']
@@ -173,14 +181,11 @@ index_details = [#(label, type, additional kwargs),
                  ('Full', FullIndex, {}),
                  ('Standard Blocking',BlockIndex , {}),
                  ('Sorted Neighbourhood', SortedNeighbourhoodIndex, {}),
-                 ('Adjacent Blocking - Standard Blocking settings',AdjacentBlockIndex , {'max_nulls': 0, 'ndx_sorting_keys':None}),
-                 ('Adjacent Blocking - no wildcards',AdjacentBlockIndex , {'max_nulls': 0}),
-                 ('Adjacent Blocking - 1 wildcard',AdjacentBlockIndex , {'max_nulls': 1}),
-                 ('Adjacent Blocking - 2 wildcards',AdjacentBlockIndex , {'max_nulls': 2}),
+                 ('Neighbourhood Blocking - Standard Blocking settings',NeighbourhoodBlockIndex , {'max_nulls': 0, 'max_rank_differences':0}),
+                 ('Neighbourhood Blocking - no wildcards',NeighbourhoodBlockIndex , {'max_nulls': 0}),
+                 ('Neighbourhood Blocking - 1 wildcard',NeighbourhoodBlockIndex , {'max_nulls': 1}),
+                 ('Neighbourhood Blocking - 2 wildcards',NeighbourhoodBlockIndex , {'max_nulls': 2}),
                 ]
-
-def int_geomspace(start, stop, num=50, endpoint=True):
-    return np.unique(np.logspace(np.log10(start), np.log10(stop), num=num, endpoint=endpoint, dtype=int))
 
 timings = get_index_timings(index_details=index_details,
                         row_counts = int_geomspace(start=10, stop=1000000, num=16),
@@ -192,6 +197,7 @@ timings = get_index_timings(index_details=index_details,
                         result_file = pathlib.Path('timings.pickle'),
                         verbose = True,
                         debug = False,
+                        continue_based_on_count=True,
                         )
 
 
