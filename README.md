@@ -27,6 +27,7 @@ Contents
 
 File                        | Description
 ----------------------------|----------------
+neighbourhood_blocking.pdf  | Paper describing Neighbourhood Blocking
 neighbourhood_blocking.py     | Implementation of Neighbourhood Blocking (requires recordlinkage)
 experiment_helpers.py       | Helpers used by the test scripts
 index_quality.ipynb         | Notebook to run index quality test and display results
